@@ -687,34 +687,6 @@ func (r Repository) pollPullRequestIsMergeable(ctx context.Context, client *gith
 				Merged                githubv4.Boolean
 				MergeStateStatus      githubv4.String
 				ViewerCanMergeAsAdmin githubv4.Boolean
-				BaseRef               struct {
-					RefUpdateRule struct {
-						RequiredStatusCheckContexts []string
-					}
-				}
-				HeadRef struct {
-					Target struct {
-						Commit struct {
-							Status struct {
-								Contexts []struct {
-									Context string
-									State   githubv4.StatusState
-								}
-							}
-							CheckSuites struct {
-								Nodes []struct {
-									CheckRuns struct {
-										Nodes []struct {
-											Name       string
-											Status     githubv4.CheckStatusState
-											Conclusion *githubv4.CheckConclusionState
-										}
-									} `graphql:"checkRuns(last: 100)"`
-								}
-							} `graphql:"checkSuites(last:100)"`
-						} `graphql:"... on Commit"`
-					}
-				}
 			} `graphql:"pullRequest(number: $prNumber)"`
 		} `graphql:"repository(owner: $owner, name: $name)"`
 	}
@@ -789,6 +761,62 @@ func (r Repository) pollPullRequestIsMergeable(ctx context.Context, client *gith
 	case BranchProtectionKindStatusChecks:
 		fallthrough
 	default:
+	}
+
+	return r.pollPullRequestStatusChecksPass(ctx, client, gqlClient, options, pr)
+
+}
+
+func (r Repository) pollPullRequestStatusChecksPass(ctx context.Context, client *github.Client, gqlClient *githubv4.Client, options GitHubOptions, pr *github.PullRequest) (bool, error) {
+	var (
+		prURL = pr.GetHTMLURL()
+		err   error
+	)
+
+	var statusQuery struct {
+		Repository struct {
+			PullRequest struct {
+				BaseRef struct {
+					RefUpdateRule struct {
+						RequiredStatusCheckContexts []string
+					}
+				}
+				HeadRef struct {
+					Target struct {
+						Commit struct {
+							Status struct {
+								Contexts []struct {
+									Context string
+									State   githubv4.StatusState
+								}
+							}
+							CheckSuites struct {
+								Nodes []struct {
+									CheckRuns struct {
+										Nodes []struct {
+											Name       string
+											Status     githubv4.CheckStatusState
+											Conclusion *githubv4.CheckConclusionState
+										}
+									} `graphql:"checkRuns(last: 100)"`
+								}
+							} `graphql:"checkSuites(last:100)"`
+						} `graphql:"... on Commit"`
+					}
+				}
+			} `graphql:"pullRequest(number: $prNumber)"`
+		} `graphql:"repository(owner: $owner, name: $name)"`
+	}
+
+	statusQueryVars := map[string]interface{}{
+		"owner":    githubv4.String(r.Owner),
+		"name":     githubv4.String(r.Name),
+		"prNumber": githubv4.Int(pr.GetNumber()),
+	}
+
+	err = gqlClient.Query(ctx, &statusQuery, statusQueryVars)
+	if err != nil {
+		return false, fmt.Errorf("failed to retrieve status of Pull Request %s: %w", prURL, err)
 	}
 
 	if pr.GetBase().Ref == nil {
@@ -890,6 +918,7 @@ func (r Repository) pollPullRequestIsMergeable(ctx context.Context, client *gith
 	time.Sleep(5 * time.Second)
 
 	return true, nil
+
 }
 
 func (r Repository) waitUntilPullRequestIsMergeable(ctx context.Context, options GitHubOptions, pr *github.PullRequest) error {
